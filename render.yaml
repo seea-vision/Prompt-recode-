@@ -1,0 +1,33 @@
+# render.yaml
+# SeeAVision Prompt Recode 4.0 — Render blueprint
+# Deploy: In Render, click "New" → "Blueprint" and point to this repo.
+
+services:
+  - type: web
+    name: prompt-recode
+    env: python
+    plan: free               # change to "starter" or higher if needed
+    region: oregon           # or "frankfurt", etc.
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: >
+      streamlit run seeavision_prompt_recode_app.py
+      --server.port $PORT
+      --server.address 0.0.0.0
+    healthCheckPath: /
+    autoDeploy: true
+
+    # Environment variables (set OPENAI_API_KEY in Render dashboard)
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # keep secret; set in dashboard after first deploy
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini   # optional override; change if you prefer another model
+
+    # Optional: preview deployments for PRs
+    pullRequestPreviewsEnabled: true
+    previewPlan: free
+
+# NOTES:
+# - requirements.txt should include: streamlit, openai, numpy, matplotlib
+# - If you add a custom Streamlit theme, include .streamlit/config.toml in the repo.
