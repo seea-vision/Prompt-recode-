@@ -1,15 +1,18 @@
 # seeavision_prompt_styler_recode_pro.py
 # -------------------------------------------------------------------
-# Prompt Styler + Recode 4.0 — Pro (single-file Streamlit app)
+# Prompt Styler + Recode 4.0 — Pro  (with VIRALITY RATING)
 #
-# What this app does
-#   • Rates the ORIGINAL prompt first: Toxicity, Disruption, Positivity
+# What’s new in this version
+#   • Adds a Virality Rating (0–100%) for the ORIGINAL prompt, each RECODE,
+#     and the STYLED preview. Shows score + label + what helped/hurt.
+#
+# App summary
+#   • Rates the ORIGINAL: Toxicity, Disruption, Positivity, Virality
 #   • Two modes:
-#       1) Style My Original (no AI needed)  → turns your exact text into poster-ready formats
-#       2) Recode Then Style (needs OpenAI)  → creates aligned alternatives, then styles them
-#   • Emoji-aligned styles + clean, high-contrast UI (mobile friendly)
-#   • Per-alternative improvement metrics (+/- %) after recode
-#   • Exports: copy text, download TXT/JSON, and PNG image tiles
+#       1) Style My Original (no AI) → keep text, style it, export PNG/TXT
+#       2) Recode Then Style (uses OpenAI) → generate aligned alternatives,
+#          show improvement %, style & export PNG/TXT
+#   • Emoji-aligned styles + high-contrast, mobile-friendly UI
 #
 # Quickstart:
 #   pip install streamlit openai pillow
@@ -17,8 +20,8 @@
 #   streamlit run seeavision_prompt_styler_recode_pro.py
 # -------------------------------------------------------------------
 
-import os, re, io, json, textwrap
-from typing import List, Dict, Any, Tuple
+import os, re, io, json
+from typing import List, Dict, Any
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
@@ -89,7 +92,7 @@ def format_prompt_for_style(text: str, preset_name: str) -> str:
             lines[0] = f"{p['prefix']}{lines[0]}"
         return "\n".join(lines)
 
-# ---------- Page / Global Styles (visibility fixes) ----------
+# ---------- Page / Global Styles ----------
 st.set_page_config(page_title="Prompt Styler + Recode 4.0 — Pro", page_icon="✨", layout="wide")
 st.markdown("""
 <style>
@@ -132,6 +135,81 @@ def improvement(before: Dict[str,int], after: Dict[str,int]) -> Dict[str,str]:
         "disruption_reduction": f"-{dis_red}%",
         "positivity_increase": f"+{pos_inc}%"
     }
+
+# ---------- Virality rating ----------
+CTA_WORDS = {"share","comment","debate","join","drop","vote","duet","stitch","tag","follow","watch","reply","discuss","weigh in","sound off"}
+HOOK_WORDS = {"why","what","how","truth","myth","secret","real","let’s","is it","can we","would you","should we"}
+def virality_label(score:int)->str:
+    if score >= 80: return "🔥 High"
+    if score >= 60: return "✨ Medium"
+    return "🧊 Low"
+
+def virality_rating(text:str, tox:int=None, dis:int=None) -> Dict[str,Any]:
+    """
+    Heuristic virality estimate (0–100) for social-feed style prompts.
+    Factors: hookiness, curiosity, CTA, formatting, length, emojis, controversy (not toxicity), clarity.
+    """
+    t = text.strip()
+    tl = t.lower()
+    length = len(t)
+
+    # Hooks & curiosity
+    has_q = "?" in t
+    hook_hits = sum(1 for w in HOOK_WORDS if w in tl)
+    cta_hits = sum(1 for w in CTA_WORDS if w in tl)
+
+    # Emojis & line breaks
+    emoji_hits = len(re.findall(r"[\U0001F300-\U0001FAFF]", t))
+    lines = max(1, t.count("\n")+1)
+
+    # Caps for punch (but penalize shouting)
+    caps_words = len(re.findall(r"\b[A-Z]{3,}\b", t))
+    caps_bonus = min(3, caps_words) * 3
+    caps_penalty = max(0, caps_words-4) * 4
+
+    # Length sweet spot (70–240 chars typical caption hook)
+    if length < 40: len_bonus = -10
+    elif length <= 240: len_bonus = 12
+    elif length <= 500: len_bonus = 6
+    else: len_bonus = -8
+
+    # Clarity: shorter avg words per line
+    avg_words_line = sum(len(l.split()) for l in t.split("\n")) / lines
+    clarity = 12 if avg_words_line <= 16 else (6 if avg_words_line <= 22 else -6)
+
+    # Disruption (spice) helps a bit; extreme hurts
+    if dis is None:
+        dis = analyze_text(text)["disruption"]
+    spice = 0
+    if 20 <= dis <= 60: spice = 10
+    elif 60 < dis <= 80: spice = 4
+    elif dis > 80: spice = -10
+
+    # Toxicity always hurts
+    if tox is None:
+        tox = analyze_text(text)["toxicity"]
+    tox_penalty = -min(30, tox // 2)
+
+    # Format bonuses
+    line_bonus = 6 if 2 <= lines <= 5 else (0 if lines == 1 else -4)
+    emoji_bonus = min(10, emoji_hits * 2)
+
+    base = 40
+    score = base + hook_hits*4 + (8 if has_q else 0) + cta_hits*5 + len_bonus + clarity + spice + tox_penalty + line_bonus + emoji_bonus + caps_bonus - caps_penalty
+    score = max(0, min(100, int(round(score))))
+    reasons = []
+    if has_q: reasons.append("question hook")
+    if hook_hits: reasons.append("curiosity keywords")
+    if cta_hits: reasons.append("CTA present")
+    if 2 <= lines <= 5: reasons.append("multi-line format")
+    if len_bonus > 0: reasons.append("strong length")
+    if emoji_hits: reasons.append("emoji accent")
+    if dis and spice > 0: reasons.append("healthy controversy")
+    if tox > 40: reasons.append("toxicity penalty")
+    if dis > 80: reasons.append("overly divisive penalty")
+    if caps_penalty: reasons.append("too many ALL CAPS")
+
+    return {"score": score, "label": virality_label(score), "reasons": reasons}
 
 # ---------- OpenAI recode (robust JSON; strips ```json fences) ----------
 def _strip_code_fences(s: str) -> str:
@@ -206,7 +284,6 @@ Rules:
 
 # ---------- Image tile rendering ----------
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    # Try DejaVuSans (present in many environments); fallback to default bitmap
     for fpath in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                   "/usr/share/fonts/dejavu/DejaVuSans.ttf",
                   "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"]:
@@ -233,9 +310,9 @@ def render_tile_png(
     text: str,
     width: int = 1080,
     padding: int = 72,
-    bg: str = "#0f172a",        # slate-900 default (for punch)
-    fg: str = "#f8fafc",        # slate-50
-    accent: str = "#f5c518",    # gold
+    bg: str = "#0f172a",
+    fg: str = "#f8fafc",
+    accent: str = "#f5c518",
     rounded: int = 36,
     title_emoji: str = ""
 ) -> bytes:
@@ -245,21 +322,17 @@ def render_tile_png(
     img = Image.new("RGB", (width, 1), color=bg)
     draw = ImageDraw.Draw(img)
 
-    # compute wrapped text height
     text_wrapped = wrap_text_for_width(draw, text, font_body, width - 2*padding)
-    _, _, w, h = draw.multiline_textbbox((0,0), text_wrapped, font=font_body, spacing=10)
+    _, _, _, h = draw.multiline_textbbox((0,0), text_wrapped, font=font_body, spacing=10)
 
     height = padding*2 + h + (0 if not title_emoji else 80)
     img = Image.new("RGB", (width, height), color=bg)
     draw = ImageDraw.Draw(img)
 
-    # header line
     if title_emoji:
         draw.text((padding, padding-16), title_emoji, font=font_big, fill=accent)
 
-    # body
     y_start = padding + (0 if not title_emoji else 56)
-    # optional rounded border
     try:
         draw.rounded_rectangle(
             (padding-20, y_start-20, width-padding+20, y_start+h+20),
@@ -269,14 +342,13 @@ def render_tile_png(
         pass
     draw.multiline_text((padding, y_start), text_wrapped, font=font_body, fill=fg, spacing=10)
 
-    # export
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 # ---------- APP ----------
 st.title("✨ Prompt Styler + Recode 4.0 — Pro")
-st.caption("Choose: keep your original (style it) or generate aligned alternatives, then style & export as PNG.")
+st.caption("Rate → (optionally) recode → style → export PNG. Now with Virality Rating.")
 
 mode = st.radio("Mode", ["Style My Original (no AI needed)", "Recode Then Style (uses AI)"])
 user_prompt = st.text_area("Paste a prompt/topic", height=180, placeholder="e.g. WHY DO WE NEED APPROVAL TO WIN?")
@@ -284,16 +356,21 @@ include_comedy = st.checkbox("Include a playful/comedic alternative (recode mode
 
 # Ratings always shown for the original
 if user_prompt.strip():
-    orig = analyze_text(user_prompt)
+    orig_scores = analyze_text(user_prompt)
+    viral_orig = virality_rating(user_prompt, tox=orig_scores["toxicity"], dis=orig_scores["disruption"])
     st.markdown("### 🔍 Original Analysis")
     st.markdown(
         f"""
         <div class="card">
           <div class="metric">
-            <div class="pill">⚠️ Toxicity: <b>{orig['toxicity']}%</b></div>
-            <div class="pill">🔥 Disruption: <b>{orig['disruption']}%</b></div>
-            <div class="pill">🌱 Positivity Potential: <b>{orig['positivity']}%</b></div>
-            <div class="pill">🔠 Length: <b>{orig['length']}</b> chars</div>
+            <div class="pill">⚠️ Toxicity: <b>{orig_scores['toxicity']}%</b></div>
+            <div class="pill">🔥 Disruption: <b>{orig_scores['disruption']}%</b></div>
+            <div class="pill">🌱 Positivity Potential: <b>{orig_scores['positivity']}%</b></div>
+            <div class="pill">🧲 Virality: <b>{viral_orig['score']}%</b> ({viral_orig['label']})</div>
+            <div class="pill">🔠 Length: <b>{orig_scores['length']}</b> chars</div>
+          </div>
+          <div style="margin-top:6px; font-size:14px; opacity:.9;">
+            <b>Why:</b> {" • ".join(viral_orig['reasons'])}
           </div>
         </div>
         """,
@@ -308,9 +385,19 @@ if mode.startswith("Style"):
 
     styled = format_prompt_for_style(user_prompt, style_choice) if user_prompt.strip() else ""
     if styled:
+        viral_styled = virality_rating(styled)  # rate the styled version, too
         st.markdown("**Preview**")
-        st.markdown(f"<div class='card'><pre style='white-space:pre-wrap;font-family:inherit;margin:0'>{styled}</pre></div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class='card'>
+              <pre style='white-space:pre-wrap;font-family:inherit;margin:0'>{styled}</pre>
+              <div class="metric" style="margin-top:8px;">
+                <div class="pill">🧲 Virality (styled): <b>{viral_styled['score']}%</b> ({viral_styled['label']})</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         st.download_button("📄 Download TXT", data=styled, file_name=f"styled_{style_choice.replace(' ','_').lower()}.txt", mime="text/plain")
 
@@ -331,11 +418,12 @@ else:
             recodes = generate_recodes(user_prompt, n_variants=n_variants)
 
         st.markdown("### ✨ Alternatives (pick a style & export)")
-        pack = {"original":{"text":user_prompt,"scores":orig},"alternatives":[]}
+        pack = {"original":{"text":user_prompt,"scores":orig_scores,"virality":virality_rating(user_prompt)},"alternatives":[]}
 
         for rec in recodes:
             now = analyze_text(rec["text"])
-            gains = improvement(orig, now)
+            gains = improvement(orig_scores, now)
+            viral = virality_rating(rec["text"], tox=now["toxicity"], dis=now["disruption"])
 
             st.markdown(
                 f"""
@@ -348,6 +436,10 @@ else:
                     <div class="pill">⚠️ Toxicity now: <b>{now['toxicity']}%</b></div>
                     <div class="pill">🔥 Disruption now: <b>{now['disruption']}%</b></div>
                     <div class="pill">🌱 Positivity now: <b>{now['positivity']}%</b></div>
+                    <div class="pill">🧲 Virality: <b>{viral['score']}%</b> ({viral['label']})</div>
+                  </div>
+                  <div style="margin-top:6px; font-size:14px; opacity:.9;">
+                    <b>Why:</b> {" • ".join(viral['reasons'])}
                   </div>
                   <div class="metric" style="margin-top:8px;">
                     <div class="pill">✅ Toxicity reduced: <b>{gains['toxicity_reduction']}</b></div>
@@ -369,12 +461,21 @@ else:
             theme = st.selectbox("PNG Theme", ["Dark (punchy)", "Light (clean)"], key=f"theme_{hash(rec['text'])}")
 
             styled_text = format_prompt_for_style(rec["text"], style_choice)
+            viral_styled = virality_rating(styled_text)
+
             st.markdown(
-                f"<div class='card' style='background:#fff;border:1px dashed #ccc;'><div style='font-weight:800;margin-bottom:6px'>Preview — {style_choice}</div><pre style='white-space:pre-wrap;font-family:inherit;margin:0'>{styled_text}</pre></div>",
+                f"""
+                <div class='card' style='background:#fff;border:1px dashed #ccc;'>
+                  <div style='font-weight:800;margin-bottom:6px'>Preview — {style_choice}</div>
+                  <pre style='white-space:pre-wrap;font-family:inherit;margin:0'>{styled_text}</pre>
+                  <div class="metric" style="margin-top:8px;">
+                    <div class="pill">🧲 Virality (styled): <b>{viral_styled['score']}%</b> ({viral_styled['label']})</div>
+                  </div>
+                </div>
+                """,
                 unsafe_allow_html=True
             )
 
-            # text + png downloads
             st.download_button("📄 Download TXT", data=styled_text,
                                file_name=f"{rec['style'].replace(' ','_').lower()}_{style_choice.replace(' ','_').lower()}.txt",
                                mime="text/plain", key=f"txt_{hash(styled_text)}")
@@ -393,7 +494,9 @@ else:
                 "styled_choice": style_choice,
                 "styled_text": styled_text,
                 "scores": now,
-                "improvements": gains
+                "improvements": gains,
+                "virality": viral,
+                "virality_styled": viral_styled
             })
 
         # JSON export of the whole batch
@@ -405,4 +508,4 @@ else:
         )
 
 st.markdown("---")
-st.caption("© 2025 Prompt Styler + Recode 4.0 — Pro")
+st.caption("© 2025-2026 Prompt Styler + Recode 4.0 — Pro")
