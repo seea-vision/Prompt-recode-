@@ -1,13 +1,13 @@
 # seeavision_prompt_styler_recode_pro.py
 # -------------------------------------------------------------------
-# Prompt Styler + Recode 4.0 — Pro (stateful, virality rating, COPY buttons)
+# Prompt Styler + Recode 4.0 — Pro (stateful, virality rating, copy)
 # -------------------------------------------------------------------
 
 import os, re, io, json
 from typing import List, Dict, Any
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-from streamlit.components.v1 import html as st_html  # for copy-to-clipboard fallback
+from streamlit.components.v1 import html as st_html
 
 # Optional OpenAI (only used in "Recode Then Style")
 try:
@@ -50,15 +50,20 @@ EMOJI_MAP = {
     "Thought-Provoking": "🤔",
 }
 
+# Expanded style presets (you said some were missing)
 STYLE_PRESETS = {
-    "Big Bold Banner":     {"case":"upper",    "prefix":"",   "bullets":False},
-    "Fire Headline":       {"case":"title",    "prefix":"🔥 ", "bullets":False},
-    "Minimal Stack":       {"case":"title",    "prefix":"",   "bullets":False},
-    "Debate Ticket":       {"case":"title",    "prefix":"",   "bullets":True },
-    "Sticker Bubble":      {"case":"mixed",    "prefix":"🗯️ ", "bullets":False},
-    "Clean Serif":         {"case":"sentence", "prefix":"",   "bullets":False},
-    "Neon Dark":           {"case":"upper",    "prefix":"⚡ ", "bullets":False},
-    "Q&A Card":            {"case":"title",    "prefix":"❓ ", "bullets":False},
+    "Big Bold Banner":     {"case":"upper",    "prefix":"",    "bullets":False},
+    "Fire Headline":       {"case":"title",    "prefix":"🔥 ",  "bullets":False},
+    "Minimal Stack":       {"case":"title",    "prefix":"",     "bullets":False},
+    "Debate Ticket":       {"case":"title",    "prefix":"",     "bullets":True },
+    "Sticker Bubble":      {"case":"mixed",    "prefix":"🗯️ ",  "bullets":False},
+    "Clean Serif":         {"case":"sentence", "prefix":"",     "bullets":False},
+    "Neon Dark":           {"case":"upper",    "prefix":"⚡ ",  "bullets":False},
+    "Q&A Card":            {"case":"title",    "prefix":"❓ ",  "bullets":False},
+    "Impact Poster":       {"case":"upper",    "prefix":"",     "bullets":False},
+    "Magazine Deck":       {"case":"sentence", "prefix":"",     "bullets":False},
+    "Ribbon Headline":     {"case":"title",    "prefix":"🏷️ ",  "bullets":False},
+    "Headline Stack":      {"case":"title",    "prefix":"",     "bullets":False},
 }
 
 def _to_case(text: str, mode: str) -> str:
@@ -273,20 +278,16 @@ def render_tile_png(text: str, width: int = 1080, padding: int = 72,
     draw = ImageDraw.Draw(img)
     text_wrapped = wrap_text_for_width(draw, text, font_body, width - 2*padding)
     _, _, _, h = draw.multiline_textbbox((0,0), text_wrapped, font=font_body, spacing=10)
-
     height = padding*2 + h + (0 if not title_emoji else 80)
+
     img = Image.new("RGB", (width, height), color=bg)
     draw = ImageDraw.Draw(img)
-
     if title_emoji:
         draw.text((padding, padding-16), title_emoji, font=font_big, fill=accent)
-
     y_start = padding + (0 if not title_emoji else 56)
     try:
-        draw.rounded_rectangle(
-            (padding-20, y_start-20, width-padding+20, y_start+h+20),
-            radius=rounded, outline=accent, width=4
-        )
+        draw.rounded_rectangle((padding-20, y_start-20, width-padding+20, y_start+h+20),
+                               radius=rounded, outline=accent, width=4)
     except Exception:
         pass
     draw.multiline_text((padding, y_start), text_wrapped, font=font_body, fill=fg, spacing=10)
@@ -295,21 +296,20 @@ def render_tile_png(text: str, width: int = 1080, padding: int = 72,
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
-# --------------------------- COPY HELPERS ---------------------------
+# --------------------------- UTIL (copy / fmt) ---------------------------
 def copy_box(text: str, key: str, note: str = "Copy-ready text"):
-    """
-    Shows a code block with Streamlit's built-in copy button + a fallback
-    'Copy to Clipboard' button (works great on mobile).
-    """
     st.markdown(f"**{note}**")
-    # Built-in copy icon:
     st.code(text)
-    # Fallback JS button:
     st_html(f"""
       <div class="copywrap">
         <button class="copybtn" onclick="navigator.clipboard.writeText(`{text.replace('`','\\`')}`)">📋 Copy to Clipboard</button>
       </div>
     """, height=40)
+
+def fmt_delta(n: int) -> str:
+    # avoid -0% displaying
+    if n == 0: return "0%"
+    return f"{'+' if n>0 else ''}{n}%"
 
 # --------------------------- STATE HELPERS ---------------------------
 def init_state():
@@ -338,14 +338,12 @@ def set_prompt(p: str):
 
 # --------------------------- APP BODY ---------------------------
 st.title("✨ Prompt Styler + Recode 4.0 — Pro")
-st.caption("Rate → (optionally) recode → style → export PNG. Copy-ready boxes added for TikTok/Twitter.")
+st.caption("Rate → (optionally) recode → style → export PNG. Copy-ready boxes included.")
 
 mode = st.radio("Mode", ["Style My Original (no AI needed)", "Recode Then Style (uses AI)"])
-
 user_prompt = st.text_area("Paste a prompt/topic", value=st.session_state.orig_prompt,
                            height=180, placeholder="e.g. WHY DO WE NEED APPROVAL TO WIN?")
 set_prompt(user_prompt)
-
 include_comedy = st.checkbox("Include a playful/comedic alternative (recode mode)", value=True)
 
 # Original analysis
@@ -374,8 +372,11 @@ if st.session_state.orig_scores:
 # ---- STYLE MY ORIGINAL ----
 if mode.startswith("Style"):
     st.markdown("### 🎨 Style Your Original")
-    style_choice = st.selectbox("Choose a style preset", list(STYLE_PRESETS.keys()), index=0, key="style_original")
-    theme = st.selectbox("PNG Theme", ["Dark (punchy)", "Light (clean)"], index=0, key="theme_original")
+    # SAFE default indexes (no post-creation assignment to session_state keys)
+    style_options = list(STYLE_PRESETS.keys())
+    default_style_index = 0
+    style_choice = st.selectbox("Choose a style preset", style_options, index=default_style_index, key="style_original")
+    theme_choice = st.selectbox("PNG Theme", ["Dark (punchy)", "Light (clean)"], index=0, key="theme_original")
 
     if st.session_state.orig_prompt.strip():
         styled = format_prompt_for_style(st.session_state.orig_prompt, style_choice)
@@ -394,15 +395,12 @@ if mode.startswith("Style"):
             unsafe_allow_html=True
         )
 
-        # NEW: copy-ready box
         copy_box(styled, key="orig_copy", note="Copy-ready prompt")
-
+        bg = "#0f172a" if theme_choice.startswith("Dark") else "#ffffff"
+        fg = "#f8fafc" if theme_choice.startswith("Dark") else "#111111"
+        png_bytes = render_tile_png(styled, bg=bg, fg=fg, title_emoji="")
         st.download_button("📄 Download TXT", data=styled,
                            file_name=f"styled_{style_choice.replace(' ','_').lower()}.txt", mime="text/plain")
-
-        bg = "#0f172a" if theme.startswith("Dark") else "#ffffff"
-        fg = "#f8fafc" if theme.startswith("Dark") else "#111111"
-        png_bytes = render_tile_png(styled, bg=bg, fg=fg, title_emoji="")
         st.download_button("🖼️ Download PNG Tile", data=png_bytes,
                            file_name=f"styled_{style_choice.replace(' ','_').lower()}.png", mime="image/png")
 
@@ -426,13 +424,13 @@ else:
 
     if st.session_state.generated and st.session_state.recodes:
         st.markdown("### ✨ Alternatives (pick a style, copy, export)")
+        style_options = list(STYLE_PRESETS.keys())
+
         for idx, rec in enumerate(st.session_state.recodes):
             now = analyze_text(rec["text"])
-            gains = {
-                "toxicity_reduction": f"-{max(0, st.session_state.orig_scores['toxicity'] - now['toxicity'])}%",
-                "disruption_reduction": f"-{max(0, st.session_state.orig_scores['disruption'] - now['disruption'])}%",
-                "positivity_increase": f"+{max(0, now['positivity'] - st.session_state.orig_scores['positivity'])}%"
-            }
+            tox_drop = max(0, st.session_state.orig_scores['toxicity'] - now['toxicity'])
+            dis_drop = max(0, st.session_state.orig_scores['disruption'] - now['disruption'])
+            pos_gain = max(0, now['positivity'] - st.session_state.orig_scores['positivity'])
             viral = virality_rating(rec["text"], tox=now["toxicity"], dis=now["disruption"])
 
             st.markdown(
@@ -452,43 +450,41 @@ else:
                     <b>Why:</b> {" • ".join(viral['reasons'])}
                   </div>
                   <div class="metric" style="margin-top:8px;">
-                    <div class="pill">✅ Toxicity reduced: <b>{gains['toxicity_reduction']}</b></div>
-                    <div class="pill">✅ Disruption reduced: <b>{gains['disruption_reduction']}</b></div>
-                    <div class="pill">✅ Positivity increased: <b>{gains['positivity_increase']}</b></div>
+                    <div class="pill">✅ Toxicity reduced: <b>{fmt_delta(tox_drop)}</b></div>
+                    <div class="pill">✅ Disruption reduced: <b>{fmt_delta(dis_drop)}</b></div>
+                    <div class="pill">✅ Positivity increased: <b>{fmt_delta(pos_gain)}</b></div>
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
-            # Style pickers (persist across reruns)
+            # SAFE defaults for widgets — no manual session_state writes after creation
+            style_default_index = 0
+            theme_default_index = 0
             style_key = f"style_{idx}"
             theme_key = f"theme_{idx}"
-            if style_key not in st.session_state:
-                st.session_state[style_key] = list(STYLE_PRESETS.keys())[0]
-            if theme_key not in st.session_state:
-                st.session_state[theme_key] = "Dark (punchy)"
 
-            st.session_state[style_key] = st.selectbox(
+            style_choice = st.selectbox(
                 f"Style for: {rec['style']}",
-                list(STYLE_PRESETS.keys()),
-                index=list(STYLE_PRESETS.keys()).index(st.session_state[style_key]),
+                style_options,
+                index=style_default_index,
                 key=style_key
             )
-            st.session_state[theme_key] = st.selectbox(
+            theme_choice = st.selectbox(
                 "PNG Theme",
                 ["Dark (punchy)", "Light (clean)"],
-                index=0 if st.session_state[theme_key].startswith("Dark") else 1,
+                index=theme_default_index,
                 key=theme_key
             )
 
-            styled_text = format_prompt_for_style(rec["text"], st.session_state[style_key])
+            styled_text = format_prompt_for_style(rec["text"], style_choice)
             viral_styled = virality_rating(styled_text)
 
             st.markdown(
                 f"""
                 <div class='card' style='background:#fff;border:1px dashed #ccc;'>
-                  <div style='font-weight:800;margin-bottom:6px'>Preview — {st.session_state[style_key]}</div>
+                  <div style='font-weight:800;margin-bottom:6px'>Preview — {style_choice}</div>
                   <pre style='white-space:pre-wrap;font-family:inherit;margin:0'>{styled_text}</pre>
                   <div class="metric" style="margin-top:8px;">
                     <div class="pill">🧲 Virality (styled): <b>{viral_styled['score']}%</b> ({viral_styled['label']})</div>
@@ -498,21 +494,19 @@ else:
                 unsafe_allow_html=True
             )
 
-            # NEW: copy-ready box for each styled alternative
             copy_box(styled_text, key=f"copy_{idx}", note="Copy-ready prompt")
 
-            st.download_button("📄 Download TXT", data=styled_text,
-                               file_name=f"{rec['style'].replace(' ','_').lower()}_{st.session_state[style_key].replace(' ','_').lower()}.txt",
-                               mime="text/plain", key=f"txt_{idx}")
-
-            bg = "#0f172a" if st.session_state[theme_key].startswith("Dark") else "#ffffff"
-            fg = "#f8fafc" if st.session_state[theme_key].startswith("Dark") else "#111111"
+            bg = "#0f172a" if theme_choice.startswith("Dark") else "#ffffff"
+            fg = "#f8fafc" if theme_choice.startswith("Dark") else "#111111"
             png_bytes = render_tile_png(styled_text, bg=bg, fg=fg, title_emoji="")
+            st.download_button("📄 Download TXT", data=styled_text,
+                               file_name=f"{rec['style'].replace(' ','_').lower()}_{style_choice.replace(' ','_').lower()}.txt",
+                               mime="text/plain", key=f"txt_{idx}")
             st.download_button("🖼️ Download PNG Tile", data=png_bytes,
-                               file_name=f"{rec['style'].replace(' ','_').lower()}_{st.session_state[style_key].replace(' ','_').lower()}.png",
+                               file_name=f"{rec['style'].replace(' ','_').lower()}_{style_choice.replace(' ','_').lower()}.png",
                                mime="image/png", key=f"png_{idx}")
 
-        # Rebuild JSON pack
+        # Pack (optional JSON)
         pack = {
             "original": {"text": st.session_state.orig_prompt,
                          "scores": st.session_state.orig_scores,
@@ -520,13 +514,13 @@ else:
             "alternatives": []
         }
         for idx, rec in enumerate(st.session_state.recodes):
-            st_style = st.session_state.get(f"style_{idx}", list(STYLE_PRESETS.keys())[0])
-            styled_text = format_prompt_for_style(rec["text"], st_style)
+            chosen_style = st.session_state.get(f"style_{idx}", list(STYLE_PRESETS.keys())[0])
+            styled_text = format_prompt_for_style(rec["text"], chosen_style)
             pack["alternatives"].append({
                 "style": rec["style"],
                 "emoji": EMOJI_MAP.get(rec["style"], rec["emoji"]),
                 "raw_text": rec["text"],
-                "styled_choice": st_style,
+                "styled_choice": chosen_style,
                 "styled_text": styled_text,
                 "scores": analyze_text(rec["text"]),
                 "virality": virality_rating(rec["text"]),
