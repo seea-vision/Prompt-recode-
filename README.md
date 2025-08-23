@@ -1,2 +1,3 @@
-# Prompt-recode-
-AI-powered app that transforms prompts, tweets, and topics into collaborative, funny, and viral-ready rewrites — while removing negativity and confusion. Includes batch mode, analytics, and export options.
+
+
+> “Rate, restyle, and reframe prompts into viral-ready, collaborative cards. Style your original text or generate more postive or less toxix aligned alternatives, with PNG export and improvement metrics.”
